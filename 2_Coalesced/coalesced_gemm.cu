@@ -3,7 +3,7 @@
 
 #define tilesize 32
 
-//naive implementation
+//coalesced implementation
 __global__ void GEMM(const half* A, const half* B, half* C, int M, int N, int K, float alpha, float beta) {
     int col = blockDim.x * blockIdx.x + threadIdx.x;
     int row = blockDim.y * blockIdx.y + threadIdx.y;
