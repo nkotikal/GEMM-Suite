@@ -4,12 +4,23 @@ CUDA SGEMM progressive optimization study. Compare custom kernels with cuBLAS an
 
 Kernels handwritten, used AI for harness.
 
+## Current Results
+
+<!-- Paste the latest benchmark table from results.txt here. -->
+
 ## Build
 
-Run from the repository root:
+`run_gemm.cu` is host code, so do not pass `-arch` when building it. At runtime,
+the harness selects the newest GPU architecture supported by the installed
+NVCC. With CUDA 12.0 on an RTX 5060, it falls back to `sm_90` PTX for driver JIT.
+Install CUDA Toolkit 12.8 or newer to compile natively for `sm_120` and use a
+matching cuBLAS. Point the compiler and runtime linker at that toolkit:
 
 ```bash
-nvcc -O3 -std=c++17 -arch=sm_90 run_gemm.cu -lcublas -lcuda -o run_gemm
+export CUDA_HOME=/usr/local/cuda-12.8
+export PATH="$CUDA_HOME/bin:$PATH"
+export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$LD_LIBRARY_PATH"
+nvcc -O3 -std=c++17 run_gemm.cu -L"$CUDA_HOME/lib64" -lcublas -lcuda -o run_gemm
 ```
 
 ## Run
@@ -28,6 +39,7 @@ TFLOP/s reference; set another value with `--peak-tflops N`.
 
 `--all` searches recursively for `.cu` files defining `GEMM`, then builds each
 with `nvcc` as a temporary shared library and calls its `launchGEMM` function.
+Each launcher is compiled for the active GPU's compute capability.
 The harness compares each custom result with cuBLAS. It warms up each backend
 three times, then reports the average of 20 CUDA-event-timed runs by default;
 `--iters` changes the timed run count. PyTorch is measured when CUDA-enabled

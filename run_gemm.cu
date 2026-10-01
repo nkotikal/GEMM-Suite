@@ -15,6 +15,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <stdexcept>
@@ -177,13 +178,42 @@ struct CompiledKernel {
 
 static std::string shellQuote(const std::string& value);
 
-static CompiledKernel compileKernel(const fs::path& path) {
+static std::string activeGpuArchitecture() {
+    int device = 0;
+    checkCuda(cudaGetDevice(&device));
+    cudaDeviceProp properties{};
+    checkCuda(cudaGetDeviceProperties(&properties, device));
+    const int gpuArchitecture = properties.major * 10 + properties.minor;
+
+    FILE* compiler = popen("nvcc --list-gpu-code 2>/dev/null", "r");
+    if (!compiler) throw std::runtime_error("Cannot query NVCC targets; check that nvcc is on PATH");
+    int bestArchitecture = 0;
+    char line[128];
+    while (fgets(line, sizeof(line), compiler)) {
+        std::string target = trim(line);
+        if (target.compare(0, 3, "sm_") != 0) continue;
+        const int architecture = std::stoi(target.substr(3));
+        if (architecture <= gpuArchitecture && architecture > bestArchitecture)
+            bestArchitecture = architecture;
+    }
+    const int compilerStatus = pclose(compiler);
+    if (compilerStatus != 0 || bestArchitecture == 0)
+        throw std::runtime_error("Could not find an NVCC target supported by this GPU");
+
+    if (bestArchitecture < gpuArchitecture) {
+        std::cerr << "Warning: GPU is sm_" << gpuArchitecture << ", but this NVCC supports only through sm_"
+                  << bestArchitecture << "; compiling PTX for driver JIT. Use CUDA Toolkit 12.8+ for native sm_120.\n";
+    }
+    return "sm_" + std::to_string(bestArchitecture);
+}
+
+static CompiledKernel compileKernel(const fs::path& path, const std::string& architecture) {
     static std::atomic<unsigned int> nextId{0};
     const std::string baseName = "gemm_launcher_" + std::to_string(getpid()) + "_" +
                                  std::to_string(nextId.fetch_add(1));
     const fs::path sharedObject = fs::temp_directory_path() / (baseName + ".so");
     const fs::path buildLog = fs::temp_directory_path() / (baseName + ".log");
-    const std::string command = "nvcc -O3 -std=c++17 -arch=sm_90 -shared -Xcompiler -fPIC " +
+    const std::string command = "nvcc -O3 -std=c++17 -arch=" + architecture + " -shared -Xcompiler -fPIC " +
         shellQuote(path.string()) + " -o " + shellQuote(sharedObject.string()) +
         " > " + shellQuote(buildLog.string()) + " 2>&1";
     if (std::system(command.c_str()) != 0) {
@@ -219,21 +249,49 @@ static void unloadKernel(CompiledKernel& kernel) {
     kernel.library = nullptr;
 }
 
-static float timeMs(const std::function<void()>& work, int iterations) {
+struct TimingStats {
+    double meanMs;
+    double stddevMs;
+};
+
+static TimingStats summarizeTimes(const std::vector<float>& samples) {
+    double mean = 0;
+    for (float sample : samples) mean += sample;
+    mean /= samples.size();
+
+    double squaredDifferences = 0;
+    for (float sample : samples) {
+        const double difference = sample - mean;
+        squaredDifferences += difference * difference;
+    }
+    const double stddev = samples.size() > 1
+        ? std::sqrt(squaredDifferences / (samples.size() - 1)) : 0.0;
+    return {mean, stddev};
+}
+
+static TimingStats timeMs(const std::function<void()>& work, int iterations) {
     for (int i = 0; i < 3; ++i) work();
     checkCuda(cudaDeviceSynchronize());
-    cudaEvent_t start, end;
-    checkCuda(cudaEventCreate(&start));
-    checkCuda(cudaEventCreate(&end));
-    checkCuda(cudaEventRecord(start));
-    for (int i = 0; i < iterations; ++i) work();
-    checkCuda(cudaEventRecord(end));
-    checkCuda(cudaEventSynchronize(end));
-    float elapsed = 0;
-    checkCuda(cudaEventElapsedTime(&elapsed, start, end));
-    cudaEventDestroy(start);
-    cudaEventDestroy(end);
-    return elapsed / iterations;
+    std::vector<cudaEvent_t> starts(iterations), ends(iterations);
+    for (int i = 0; i < iterations; ++i) {
+        checkCuda(cudaEventCreate(&starts[i]));
+        checkCuda(cudaEventCreate(&ends[i]));
+    }
+
+    for (int i = 0; i < iterations; ++i) {
+        checkCuda(cudaEventRecord(starts[i]));
+        work();
+        checkCuda(cudaEventRecord(ends[i]));
+    }
+    checkCuda(cudaEventSynchronize(ends.back()));
+
+    std::vector<float> samples(iterations);
+    for (int i = 0; i < iterations; ++i) {
+        checkCuda(cudaEventElapsedTime(&samples[i], starts[i], ends[i]));
+        cudaEventDestroy(starts[i]);
+        cudaEventDestroy(ends[i]);
+    }
+    return summarizeTimes(samples);
 }
 
 static std::string shellQuote(const std::string& value) {
@@ -268,27 +326,32 @@ static std::string resolvePython(const Options& options) {
     return "python3";
 }
 
-static std::string pytorchTimeMs(const Options& options, const std::string& python) {
+static std::optional<TimingStats> pytorchTimeMs(const Options& options, const std::string& python) {
     const std::string script =
-        "import sys,torch; m,n,k,iters=map(int,sys.argv[1:]); "
+        "import sys,torch,statistics; m,n,k,iters=map(int,sys.argv[1:]); "
         "assert torch.cuda.is_available(), 'PyTorch CUDA is unavailable'; "
         "torch.manual_seed(0); a=torch.randn((m,k),device='cuda',dtype=torch.float32); "
         "b=torch.randn((k,n),device='cuda',dtype=torch.float32); "
         "fn=lambda: torch.matmul(a,b); [fn() for _ in range(3)]; "
-        "s=torch.cuda.Event(enable_timing=True); e=torch.cuda.Event(enable_timing=True); "
-        "s.record(); [fn() for _ in range(iters)]; e.record(); torch.cuda.synchronize(); "
-        "print(s.elapsed_time(e)/iters)";
+        "starts=[torch.cuda.Event(enable_timing=True) for _ in range(iters)]; "
+        "ends=[torch.cuda.Event(enable_timing=True) for _ in range(iters)]; "
+        "[(starts[i].record(),fn(),ends[i].record()) for i in range(iters)]; "
+        "torch.cuda.synchronize(); samples=[s.elapsed_time(e) for s,e in zip(starts,ends)]; "
+        "print(sum(samples)/iters, statistics.stdev(samples) if iters > 1 else 0.0)";
     std::ostringstream command;
     command << shellQuote(python) << " -c " << shellQuote(script) << ' ' << options.m << ' ' << options.n << ' '
             << options.k << ' ' << options.iterations << " 2>/dev/null";
     FILE* pipe = popen(command.str().c_str(), "r");
-    if (!pipe) return "unavailable";
+    if (!pipe) return std::nullopt;
     char buffer[256];
     std::string output;
     while (fgets(buffer, sizeof(buffer), pipe)) output += buffer;
     const int status = pclose(pipe);
-    if (status != 0 || output.empty()) return "unavailable";
-    return output;
+    if (status != 0 || output.empty()) return std::nullopt;
+    TimingStats timing{};
+    std::istringstream values(output);
+    if (!(values >> timing.meanMs >> timing.stddevMs)) return std::nullopt;
+    return timing;
 }
 
 struct DeviceMatrices {
@@ -300,7 +363,7 @@ struct DeviceMatrices {
 
 struct BenchmarkResult {
     std::string name;
-    float milliseconds;
+    TimingStats timing;
     float maxError;
 };
 
@@ -324,8 +387,8 @@ static DeviceMatrices createDeviceMatrices(const Options& options) {
     return matrices;
 }
 
-static float benchmarkCublas(cublasHandle_t handle, const Options& options,
-                             const DeviceMatrices& matrices, std::vector<float>& reference) {
+static TimingStats benchmarkCublas(cublasHandle_t handle, const Options& options,
+                                   const DeviceMatrices& matrices, std::vector<float>& reference) {
     const float alpha = 1.0f;
     const float beta = 0.0f;
     auto gemm = [&] {
@@ -334,10 +397,10 @@ static float benchmarkCublas(cublasHandle_t handle, const Options& options,
             &beta, matrices.c, CUDA_R_32F, options.n, CUDA_R_32F, CUBLAS_GEMM_DEFAULT));
     };
 
-    const float milliseconds = timeMs(gemm, options.iterations);
+    const TimingStats timing = timeMs(gemm, options.iterations);
     reference.resize(matrices.outputCount);
     checkCuda(cudaMemcpy(reference.data(), matrices.c, matrices.outputCount * sizeof(float), cudaMemcpyDeviceToHost));
-    return milliseconds;
+    return timing;
 }
 
 static float compareOutput(const std::vector<float>& output, const std::vector<float>& reference) {
@@ -351,51 +414,56 @@ static float compareOutput(const std::vector<float>& output, const std::vector<f
 }
 
 static BenchmarkResult benchmarkKernel(const fs::path& path, const Options& options,
-                                       const DeviceMatrices& matrices, const std::vector<float>& reference) {
-    CompiledKernel kernel = compileKernel(path);
+                                       const DeviceMatrices& matrices, const std::vector<float>& reference,
+                                       const std::string& architecture) {
+    CompiledKernel kernel = compileKernel(path, architecture);
     auto launch = [&] {
         checkCuda(kernel.launch(matrices.a, matrices.b, matrices.c,
                                 options.m, options.n, options.k, 1.0f, 0.0f));
     };
 
     checkCuda(cudaMemset(matrices.c, 0, matrices.outputCount * sizeof(float)));
-    const float milliseconds = timeMs(launch, options.iterations);
+    const TimingStats timing = timeMs(launch, options.iterations);
     std::vector<float> output(matrices.outputCount);
     checkCuda(cudaMemcpy(output.data(), matrices.c, matrices.outputCount * sizeof(float), cudaMemcpyDeviceToHost));
     unloadKernel(kernel);
-    return {path.stem().string(), milliseconds, compareOutput(output, reference)};
+    return {path.stem().string(), timing, compareOutput(output, reference)};
 }
 
-static std::string createReport(const Options& options, const std::vector<BenchmarkResult>& kernels,
-                                float cublasMs, const std::string& torchMs) {
-    const double operations = 2.0 * options.m * options.n * options.k;
-    std::ostringstream report;
-    report << std::fixed << std::setprecision(4)
-           << "FP32 GEMM  M=" << options.m << " N=" << options.n << " K=" << options.k
+static void printReportHeader(std::ostream& report, const Options& options) {
+    report << "FP32 GEMM  M=" << options.m << " N=" << options.n << " K=" << options.k
            << "  iterations=" << options.iterations << "\n"
-           << std::left << std::setw(24) << "Implementation" << std::right << std::setw(12) << "ms"
+           << std::left << std::setw(24) << "Implementation" << std::right
+           << std::setw(12) << "mean ms" << std::setw(12) << "stddev ms"
            << std::setw(16) << "max abs error";
     if (options.flops) report << std::setw(14) << "TFLOP/s" << std::setw(12) << "% peak";
-    report << "\n" << std::string(options.flops ? 78 : 52, '-') << "\n";
+    report << "\n" << std::string(options.flops ? 90 : 64, '-') << "\n";
+}
 
-    auto addRow = [&](const std::string& name, double milliseconds, const std::string& error) {
-        report << std::left << std::setw(24) << name << std::right << std::setw(12) << milliseconds
-               << std::setw(16) << error;
-        if (options.flops) {
-            const double tflops = operations / (milliseconds * 1.0e9);
-            report << std::setw(14) << tflops << std::setw(12) << (100.0 * tflops / options.peakTflops);
-        }
-        report << "\n";
-    };
+static void printReportRow(std::ostream& report, const Options& options, const std::string& name,
+                           const TimingStats& timing, const std::string& error) {
+    const double operations = 2.0 * options.m * options.n * options.k;
+    report << std::fixed << std::setprecision(4)
+           << std::left << std::setw(24) << name << std::right
+           << std::setw(12) << timing.meanMs << std::setw(12) << timing.stddevMs
+           << std::setw(16) << error;
+    if (options.flops) {
+        const double tflops = operations / (timing.meanMs * 1.0e9);
+        report << std::setw(14) << tflops << std::setw(12) << (100.0 * tflops / options.peakTflops);
+    }
+    report << "\n";
+}
 
-    for (const auto& result : kernels)
-        addRow(result.name, result.milliseconds, std::to_string(result.maxError));
-    addRow("cuBLAS", cublasMs, "-");
-    if (torchMs == "unavailable")
-        report << std::left << std::setw(24) << "PyTorch matmul" << std::right << std::setw(12) << "unavailable" << "\n";
-    else
-        addRow("PyTorch matmul", std::stod(torchMs), "-");
+static void printUnavailableRow(std::ostream& report, const Options& options) {
+    report << std::left << std::setw(24) << "PyTorch matmul" << std::right
+           << std::setw(12) << "unavailable" << std::setw(12) << "-" << std::setw(16) << "-";
+    if (options.flops) report << std::setw(14) << "-" << std::setw(12) << "-";
+    report << "\n";
+}
 
+static void printReportSummary(std::ostream& report, const Options& options,
+                               const std::vector<BenchmarkResult>& kernels) {
+    const double operations = 2.0 * options.m * options.n * options.k;
     if (options.flops)
         report << "Operations per GEMM: " << std::fixed << std::setprecision(0) << operations
                << "; peak reference: " << std::setprecision(1) << options.peakTflops << " TFLOP/s\n";
@@ -404,9 +472,8 @@ static std::string createReport(const Options& options, const std::vector<Benchm
             return result.maxError <= options.absoluteTolerance;
         });
         report << "Testcase: " << (passed ? "PASS" : "FAIL")
-             << " (absolute tolerance " << std::setprecision(6) << options.absoluteTolerance << ")\n";
+               << " (absolute tolerance " << std::setprecision(6) << options.absoluteTolerance << ")\n";
     }
-    return report.str();
 }
 
 static int runBenchmark(Options options) {
@@ -423,33 +490,63 @@ static int runBenchmark(Options options) {
     checkCu(cuInit(0));
     checkCuda(cudaSetDevice(0));
     checkCuda(cudaFree(nullptr));
+    const std::string architecture = activeGpuArchitecture();
+    std::cout << "Kernel target: " << architecture << "\n";
     const DeviceMatrices matrices = createDeviceMatrices(options);
 
     cublasHandle_t handle;
     checkCublas(cublasCreate(&handle));
     std::vector<float> reference;
-    const float cublasMs = benchmarkCublas(handle, options, matrices, reference);
+    std::ofstream reportFile;
+    if (!options.output.empty()) {
+        reportFile.open(options.output, std::ios::trunc);
+        if (!reportFile) throw std::runtime_error("Cannot write output file: " + options.output);
+    }
+    auto writeBoth = [&](auto write) {
+        write(std::cout);
+        std::cout.flush();
+        if (reportFile) {
+            write(reportFile);
+            reportFile.flush();
+        }
+    };
+    writeBoth([&](std::ostream& report) { printReportHeader(report, options); });
+
+    const TimingStats cublasTiming = benchmarkCublas(handle, options, matrices, reference);
+    writeBoth([&](std::ostream& report) {
+        printReportRow(report, options, "cuBLAS", cublasTiming, "-");
+    });
 
     std::vector<BenchmarkResult> results;
-    for (const auto& path : paths)
-        results.push_back(benchmarkKernel(path, options, matrices, reference));
+    for (const auto& path : paths) {
+        results.push_back(benchmarkKernel(path, options, matrices, reference, architecture));
+        const BenchmarkResult& result = results.back();
+        writeBoth([&](std::ostream& report) {
+            printReportRow(report, options, result.name, result.timing, std::to_string(result.maxError));
+        });
+    }
 
     const std::string python = resolvePython(options);
-    const std::string torchMs = pytorchTimeMs(options, python);
-    const std::string report = createReport(options, results, cublasMs, torchMs);
-    std::cout << report;
-    if (!options.output.empty()) {
-        std::ofstream file(options.output, std::ios::trunc);
-        if (!file) throw std::runtime_error("Cannot write output file: " + options.output);
-        file << report;
-        std::cout << "Report saved to: " << options.output << "\n";
+    const auto torchTiming = pytorchTimeMs(options, python);
+    if (torchTiming) {
+        writeBoth([&](std::ostream& report) {
+            printReportRow(report, options, "PyTorch matmul", *torchTiming, "-");
+        });
+    } else {
+        writeBoth([&](std::ostream& report) { printUnavailableRow(report, options); });
     }
+
+    writeBoth([&](std::ostream& report) { printReportSummary(report, options, results); });
+    if (reportFile)
+        std::cout << "Report saved to: " << options.output << "\n";
 
     cublasDestroy(handle);
     cudaFree(matrices.a);
     cudaFree(matrices.b);
     cudaFree(matrices.c);
-    if (options.testcase && report.find("Testcase: FAIL") != std::string::npos) return 2;
+    if (options.testcase && std::any_of(results.begin(), results.end(), [&](const BenchmarkResult& result) {
+            return result.maxError > options.absoluteTolerance;
+        })) return 2;
     return 0;
 }
 
