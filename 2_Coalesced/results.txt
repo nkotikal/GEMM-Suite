@@ -1,0 +1,8 @@
+FP32 GEMM  M=2048 N=4096 K=1024  iterations=20
+Implementation                    ms   max abs error       TFLOP/s      % peak
+------------------------------------------------------------------------------
+naive_gemm                   85.2941        0.000021        0.2014      1.3079
+coalesced_gemm               23.3459        0.000021        0.7359      4.7785
+cuBLAS                        8.5949               -        1.9989     12.9796
+PyTorch matmul                2.6442               -        6.4972     42.1894
+Operations per GEMM: 17179869184; peak reference: 15.4 TFLOP/s
