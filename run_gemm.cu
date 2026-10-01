@@ -1,20 +1,25 @@
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include <cuda.h>
-#include <nvrtc.h>
 
 #include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <dlfcn.h>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -23,16 +28,16 @@ static void checkCuda(cudaError_t status) {
     if (status != cudaSuccess) throw std::runtime_error(cudaGetErrorString(status));
 }
 
+static void checkCublas(cublasStatus_t status) {
+    if (status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error("cuBLAS call failed");
+}
+
 static void checkCu(CUresult status) {
     if (status != CUDA_SUCCESS) {
         const char* message = nullptr;
         cuGetErrorString(status, &message);
-        throw std::runtime_error(message ? message : "CUDA driver error");
+        throw std::runtime_error(message ? message : "CUDA Driver API error");
     }
-}
-
-static void checkCublas(cublasStatus_t status) {
-    if (status != CUBLAS_STATUS_SUCCESS) throw std::runtime_error("cuBLAS call failed");
 }
 
 static std::string readText(const fs::path& path) {
@@ -45,15 +50,18 @@ static std::string readText(const fs::path& path) {
 
 struct Options {
     int m = 256, n = 256, k = 256, iterations = 20;
-    bool all = false, flops = false;
+    bool all = false, flops = false, testcase = false;
     double peakTflops = 15.4;
+    unsigned int seed = 0;
+    float absoluteTolerance = 1.0e-3f;
     std::string kernel, output, python = "auto";
 };
 
 static void printHelp() {
     std::cout << "Usage: ./run_gemm (--kernel FILE|--all) [options]\n"
-                 "  --kernel FILE       CUDA source containing __global__ GEMM(...)\n"
+                 "  --kernel FILE       CUDA source with GEMM and launchGEMM\n"
                  "  --all               Run every matching .cu file under the current directory\n"
+                 "  --testcase          Read testcase.txt beside the selected kernel and check against cuBLAS\n"
                  "  --m N --n N --k N   Matrix dimensions (default: 256 each)\n"
                  "  --iters N           Timed launches (default: 20)\n"
                  "  --flops             Show TFLOP/s and percent of theoretical peak\n"
@@ -75,6 +83,7 @@ static Options parseOptions(int argc, char** argv) {
             std::exit(0);
         } else if (arg == "--all") options.all = true;
         else if (arg == "--flops") options.flops = true;
+        else if (arg == "--testcase") options.testcase = true;
         else if (arg == "--kernel") options.kernel = value();
         else if (arg == "--m") options.m = std::stoi(value());
         else if (arg == "--n") options.n = std::stoi(value());
@@ -87,6 +96,8 @@ static Options parseOptions(int argc, char** argv) {
     }
     if (options.all == !options.kernel.empty())
         throw std::runtime_error("Specify exactly one of --kernel FILE or --all");
+    if (options.testcase && options.all)
+        throw std::runtime_error("--testcase requires --kernel FILE, not --all");
     if (options.m < 1 || options.n < 1 || options.k < 1 || options.iterations < 1 || options.peakTflops <= 0)
         throw std::runtime_error("Dimensions, iterations, and peak TFLOP/s must be positive");
     return options;
@@ -116,36 +127,96 @@ static fs::path resolveKernel(const std::string& requested) {
     throw std::runtime_error("No GEMM kernel found for: " + requested);
 }
 
-static CUfunction compileKernel(const fs::path& path, CUmodule& module) {
-    const std::string source = readText(path);
-    nvrtcProgram program;
-    nvrtcResult result = nvrtcCreateProgram(&program, source.c_str(), path.filename().string().c_str(), 0, nullptr, nullptr);
-    if (result != NVRTC_SUCCESS) throw std::runtime_error(nvrtcGetErrorString(result));
-    result = nvrtcAddNameExpression(program, "GEMM");
-    if (result != NVRTC_SUCCESS) throw std::runtime_error(nvrtcGetErrorString(result));
-    const char* arguments[] = {"--gpu-architecture=compute_90", "--std=c++14", "--include-path=/usr/local/cuda/include"};
-    result = nvrtcCompileProgram(program, 3, arguments);
-    if (result != NVRTC_SUCCESS) {
-        size_t logSize = 0;
-        nvrtcGetProgramLogSize(program, &logSize);
-        std::string log(logSize, '\0');
-        if (logSize) nvrtcGetProgramLog(program, log.data());
-        nvrtcDestroyProgram(&program);
-        throw std::runtime_error("NVRTC compile failed for " + path.string() + ":\n" + log);
+static std::string trim(std::string text) {
+    const auto first = text.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return {};
+    const auto last = text.find_last_not_of(" \t\r\n");
+    return text.substr(first, last - first + 1);
+}
+
+static Options loadTestcase(Options options, const fs::path& path) {
+    std::ifstream file(path);
+    if (!file) throw std::runtime_error("Cannot open testcase file: " + path.string());
+
+    bool hasM = false, hasN = false, hasK = false;
+    std::string line;
+    int lineNumber = 0;
+    while (std::getline(file, line)) {
+        ++lineNumber;
+        line = trim(line);
+        if (line.empty() || line[0] == '#') continue;
+        const auto separator = line.find('=');
+        if (separator == std::string::npos)
+            throw std::runtime_error(path.string() + ":" + std::to_string(lineNumber) + ": expected key=value");
+        std::string key = trim(line.substr(0, separator));
+        const std::string value = trim(line.substr(separator + 1));
+        std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return std::tolower(c); });
+        if (key == "m") { options.m = std::stoi(value); hasM = true; }
+        else if (key == "n") { options.n = std::stoi(value); hasN = true; }
+        else if (key == "k") { options.k = std::stoi(value); hasK = true; }
+        else if (key == "seed") options.seed = static_cast<unsigned int>(std::stoul(value));
+        else if (key == "atol") options.absoluteTolerance = std::stof(value);
+        else throw std::runtime_error(path.string() + ":" + std::to_string(lineNumber) + ": unknown key " + key);
     }
-    const char* loweredName = nullptr;
-    result = nvrtcGetLoweredName(program, "GEMM", &loweredName);
-    if (result != NVRTC_SUCCESS) throw std::runtime_error(nvrtcGetErrorString(result));
-    const std::string kernelName(loweredName);
-    size_t ptxSize = 0;
-    nvrtcGetPTXSize(program, &ptxSize);
-    std::vector<char> ptx(ptxSize);
-    nvrtcGetPTX(program, ptx.data());
-    nvrtcDestroyProgram(&program);
-    checkCu(cuModuleLoadData(&module, ptx.data()));
-    CUfunction function;
-    checkCu(cuModuleGetFunction(&function, module, kernelName.c_str()));
-    return function;
+    if (!hasM || !hasN || !hasK)
+        throw std::runtime_error(path.string() + ": testcase must define M, N, and K");
+    if (options.m < 1 || options.n < 1 || options.k < 1 || options.absoluteTolerance < 0)
+        throw std::runtime_error(path.string() + ": dimensions must be positive and atol nonnegative");
+    return options;
+}
+
+using GemmLauncher = cudaError_t (*)(const float*, const float*, float*, int, int, int,
+                                     float, float);
+
+struct CompiledKernel {
+    void* library = nullptr;
+    GemmLauncher launch = nullptr;
+    fs::path sharedObject;
+    fs::path buildLog;
+};
+
+static std::string shellQuote(const std::string& value);
+
+static CompiledKernel compileKernel(const fs::path& path) {
+    static std::atomic<unsigned int> nextId{0};
+    const std::string baseName = "gemm_launcher_" + std::to_string(getpid()) + "_" +
+                                 std::to_string(nextId.fetch_add(1));
+    const fs::path sharedObject = fs::temp_directory_path() / (baseName + ".so");
+    const fs::path buildLog = fs::temp_directory_path() / (baseName + ".log");
+    const std::string command = "nvcc -O3 -std=c++17 -arch=sm_90 -shared -Xcompiler -fPIC " +
+        shellQuote(path.string()) + " -o " + shellQuote(sharedObject.string()) +
+        " > " + shellQuote(buildLog.string()) + " 2>&1";
+    if (std::system(command.c_str()) != 0) {
+        const std::string log = fs::exists(buildLog) ? readText(buildLog) : "No compiler log available";
+        fs::remove(sharedObject);
+        fs::remove(buildLog);
+        throw std::runtime_error("nvcc failed for " + path.string() + ":\n" + log);
+    }
+
+    void* library = dlopen(sharedObject.c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (!library) {
+        const std::string error = dlerror();
+        fs::remove(sharedObject);
+        fs::remove(buildLog);
+        throw std::runtime_error("Cannot load " + sharedObject.string() + ": " + error);
+    }
+    dlerror();
+    auto launch = reinterpret_cast<GemmLauncher>(dlsym(library, "launchGEMM"));
+    const char* error = dlerror();
+    if (error) {
+        dlclose(library);
+        fs::remove(sharedObject);
+        fs::remove(buildLog);
+        throw std::runtime_error(path.string() + " must export launchGEMM: " + error);
+    }
+    return {library, launch, sharedObject, buildLog};
+}
+
+static void unloadKernel(CompiledKernel& kernel) {
+    if (kernel.library) dlclose(kernel.library);
+    fs::remove(kernel.sharedObject);
+    fs::remove(kernel.buildLog);
+    kernel.library = nullptr;
 }
 
 static float timeMs(const std::function<void()>& work, int iterations) {
@@ -220,107 +291,171 @@ static std::string pytorchTimeMs(const Options& options, const std::string& pyth
     return output;
 }
 
+struct DeviceMatrices {
+    float* a;
+    float* b;
+    float* c;
+    size_t outputCount;
+};
+
+struct BenchmarkResult {
+    std::string name;
+    float milliseconds;
+    float maxError;
+};
+
+static DeviceMatrices createDeviceMatrices(const Options& options) {
+    const size_t aCount = static_cast<size_t>(options.m) * options.k;
+    const size_t bCount = static_cast<size_t>(options.k) * options.n;
+    const size_t cCount = static_cast<size_t>(options.m) * options.n;
+    std::mt19937 random(options.seed);
+    std::uniform_real_distribution<float> values(-0.5f, 0.5f);
+    std::vector<float> hostA(aCount), hostB(bCount);
+    for (auto& value : hostA) value = values(random);
+    for (auto& value : hostB) value = values(random);
+
+    DeviceMatrices matrices{};
+    matrices.outputCount = cCount;
+    checkCuda(cudaMalloc(&matrices.a, aCount * sizeof(float)));
+    checkCuda(cudaMalloc(&matrices.b, bCount * sizeof(float)));
+    checkCuda(cudaMalloc(&matrices.c, cCount * sizeof(float)));
+    checkCuda(cudaMemcpy(matrices.a, hostA.data(), aCount * sizeof(float), cudaMemcpyHostToDevice));
+    checkCuda(cudaMemcpy(matrices.b, hostB.data(), bCount * sizeof(float), cudaMemcpyHostToDevice));
+    return matrices;
+}
+
+static float benchmarkCublas(cublasHandle_t handle, const Options& options,
+                             const DeviceMatrices& matrices, std::vector<float>& reference) {
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+    auto gemm = [&] {
+        checkCublas(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N, options.n, options.m, options.k,
+            &alpha, matrices.b, CUDA_R_32F, options.n, matrices.a, CUDA_R_32F, options.k,
+            &beta, matrices.c, CUDA_R_32F, options.n, CUDA_R_32F, CUBLAS_GEMM_DEFAULT));
+    };
+
+    const float milliseconds = timeMs(gemm, options.iterations);
+    reference.resize(matrices.outputCount);
+    checkCuda(cudaMemcpy(reference.data(), matrices.c, matrices.outputCount * sizeof(float), cudaMemcpyDeviceToHost));
+    return milliseconds;
+}
+
+static float compareOutput(const std::vector<float>& output, const std::vector<float>& reference) {
+    float maxError = 0;
+    for (size_t i = 0; i < output.size(); ++i) {
+        if (!std::isfinite(output[i]) || !std::isfinite(reference[i]))
+            return std::numeric_limits<float>::infinity();
+        maxError = std::max(maxError, std::abs(output[i] - reference[i]));
+    }
+    return maxError;
+}
+
+static BenchmarkResult benchmarkKernel(const fs::path& path, const Options& options,
+                                       const DeviceMatrices& matrices, const std::vector<float>& reference) {
+    CompiledKernel kernel = compileKernel(path);
+    auto launch = [&] {
+        checkCuda(kernel.launch(matrices.a, matrices.b, matrices.c,
+                                options.m, options.n, options.k, 1.0f, 0.0f));
+    };
+
+    checkCuda(cudaMemset(matrices.c, 0, matrices.outputCount * sizeof(float)));
+    const float milliseconds = timeMs(launch, options.iterations);
+    std::vector<float> output(matrices.outputCount);
+    checkCuda(cudaMemcpy(output.data(), matrices.c, matrices.outputCount * sizeof(float), cudaMemcpyDeviceToHost));
+    unloadKernel(kernel);
+    return {path.stem().string(), milliseconds, compareOutput(output, reference)};
+}
+
+static std::string createReport(const Options& options, const std::vector<BenchmarkResult>& kernels,
+                                float cublasMs, const std::string& torchMs) {
+    const double operations = 2.0 * options.m * options.n * options.k;
+    std::ostringstream report;
+    report << std::fixed << std::setprecision(4)
+           << "FP32 GEMM  M=" << options.m << " N=" << options.n << " K=" << options.k
+           << "  iterations=" << options.iterations << "\n"
+           << std::left << std::setw(24) << "Implementation" << std::right << std::setw(12) << "ms"
+           << std::setw(16) << "max abs error";
+    if (options.flops) report << std::setw(14) << "TFLOP/s" << std::setw(12) << "% peak";
+    report << "\n" << std::string(options.flops ? 78 : 52, '-') << "\n";
+
+    auto addRow = [&](const std::string& name, double milliseconds, const std::string& error) {
+        report << std::left << std::setw(24) << name << std::right << std::setw(12) << milliseconds
+               << std::setw(16) << error;
+        if (options.flops) {
+            const double tflops = operations / (milliseconds * 1.0e9);
+            report << std::setw(14) << tflops << std::setw(12) << (100.0 * tflops / options.peakTflops);
+        }
+        report << "\n";
+    };
+
+    for (const auto& result : kernels)
+        addRow(result.name, result.milliseconds, std::to_string(result.maxError));
+    addRow("cuBLAS", cublasMs, "-");
+    if (torchMs == "unavailable")
+        report << std::left << std::setw(24) << "PyTorch matmul" << std::right << std::setw(12) << "unavailable" << "\n";
+    else
+        addRow("PyTorch matmul", std::stod(torchMs), "-");
+
+    if (options.flops)
+        report << "Operations per GEMM: " << std::fixed << std::setprecision(0) << operations
+               << "; peak reference: " << std::setprecision(1) << options.peakTflops << " TFLOP/s\n";
+    if (options.testcase) {
+        const bool passed = std::all_of(kernels.begin(), kernels.end(), [&](const BenchmarkResult& result) {
+            return result.maxError <= options.absoluteTolerance;
+        });
+        report << "Testcase: " << (passed ? "PASS" : "FAIL")
+             << " (absolute tolerance " << std::setprecision(6) << options.absoluteTolerance << ")\n";
+    }
+    return report.str();
+}
+
+static int runBenchmark(Options options) {
+    std::vector<fs::path> paths;
+    if (options.testcase) {
+        const fs::path path = resolveKernel(options.kernel);
+        options = loadTestcase(options, path.parent_path() / "testcase.txt");
+        paths.push_back(path);
+    } else {
+        paths = options.all ? discoverKernels() : std::vector<fs::path>{resolveKernel(options.kernel)};
+    }
+    if (paths.empty()) throw std::runtime_error("No CUDA GEMM source files found under the current directory");
+
+    checkCu(cuInit(0));
+    checkCuda(cudaSetDevice(0));
+    checkCuda(cudaFree(nullptr));
+    const DeviceMatrices matrices = createDeviceMatrices(options);
+
+    cublasHandle_t handle;
+    checkCublas(cublasCreate(&handle));
+    std::vector<float> reference;
+    const float cublasMs = benchmarkCublas(handle, options, matrices, reference);
+
+    std::vector<BenchmarkResult> results;
+    for (const auto& path : paths)
+        results.push_back(benchmarkKernel(path, options, matrices, reference));
+
+    const std::string python = resolvePython(options);
+    const std::string torchMs = pytorchTimeMs(options, python);
+    const std::string report = createReport(options, results, cublasMs, torchMs);
+    std::cout << report;
+    if (!options.output.empty()) {
+        std::ofstream file(options.output, std::ios::trunc);
+        if (!file) throw std::runtime_error("Cannot write output file: " + options.output);
+        file << report;
+        std::cout << "Report saved to: " << options.output << "\n";
+    }
+
+    cublasDestroy(handle);
+    cudaFree(matrices.a);
+    cudaFree(matrices.b);
+    cudaFree(matrices.c);
+    if (options.testcase && report.find("Testcase: FAIL") != std::string::npos) return 2;
+    return 0;
+}
+
 int main(int argc, char** argv) {
     try {
-        const Options options = parseOptions(argc, argv);
-        const std::vector<fs::path> kernels = options.all ? discoverKernels() : std::vector<fs::path>{resolveKernel(options.kernel)};
-        if (kernels.empty()) throw std::runtime_error("No CUDA GEMM source files found under the current directory");
-
-        checkCuda(cudaSetDevice(0));
-        checkCuda(cudaFree(nullptr));
-        checkCu(cuInit(0));
-
-        const size_t aCount = static_cast<size_t>(options.m) * options.k;
-        const size_t bCount = static_cast<size_t>(options.k) * options.n;
-        const size_t cCount = static_cast<size_t>(options.m) * options.n;
-        std::mt19937 random(0);
-        std::uniform_real_distribution<float> values(-0.5f, 0.5f);
-        std::vector<float> hostA(aCount), hostB(bCount), hostC(cCount);
-        for (auto& item : hostA) item = values(random);
-        for (auto& item : hostB) item = values(random);
-
-        float *deviceA, *deviceB, *deviceC;
-        checkCuda(cudaMalloc(&deviceA, aCount * sizeof(float)));
-        checkCuda(cudaMalloc(&deviceB, bCount * sizeof(float)));
-        checkCuda(cudaMalloc(&deviceC, cCount * sizeof(float)));
-        checkCuda(cudaMemcpy(deviceA, hostA.data(), aCount * sizeof(float), cudaMemcpyHostToDevice));
-        checkCuda(cudaMemcpy(deviceB, hostB.data(), bCount * sizeof(float), cudaMemcpyHostToDevice));
-
-        cublasHandle_t handle;
-        checkCublas(cublasCreate(&handle));
-        int m = options.m, n = options.n, k = options.k;
-        float kernelAlpha = 1.0f, kernelBeta = 0.0f;
-        auto cublasGemm = [&] {
-            checkCublas(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N, options.n, options.m, options.k,
-                &kernelAlpha, deviceB, CUDA_R_32F, options.n, deviceA, CUDA_R_32F, options.k,
-                &kernelBeta, deviceC, CUDA_R_32F, options.n, CUDA_R_32F, CUBLAS_GEMM_DEFAULT));
-        };
-        const float cublasMs = timeMs(cublasGemm, options.iterations);
-        checkCuda(cudaMemcpy(hostC.data(), deviceC, cCount * sizeof(float), cudaMemcpyDeviceToHost));
-        const std::vector<float> reference = hostC;
-
-        struct Row { std::string name, ms, error; };
-        std::vector<Row> rows;
-        const unsigned int tiles = static_cast<unsigned int>((std::max(options.m, options.n) + 15) / 16);
-        for (const auto& path : kernels) {
-            CUmodule module;
-            CUfunction function = compileKernel(path, module);
-            auto launch = [&] {
-                void* args[] = {&deviceA, &deviceB, &deviceC,
-                    &m, &n, &k, &kernelAlpha, &kernelBeta};
-                checkCu(cuLaunchKernel(function, tiles, tiles, 1, 16, 16, 1, 0, nullptr, args, nullptr));
-            };
-            checkCuda(cudaMemset(deviceC, 0, cCount * sizeof(float)));
-            const float elapsed = timeMs(launch, options.iterations);
-            checkCuda(cudaMemcpy(hostC.data(), deviceC, cCount * sizeof(float), cudaMemcpyDeviceToHost));
-            float maxError = 0;
-            for (size_t i = 0; i < cCount; ++i) {
-                if (!std::isfinite(hostC[i]) || !std::isfinite(reference[i])) {
-                    maxError = std::numeric_limits<float>::infinity();
-                    break;
-                }
-                maxError = std::max(maxError, std::abs(hostC[i] - reference[i]));
-            }
-            rows.push_back({path.stem().string(), std::to_string(elapsed), std::to_string(maxError)});
-            checkCu(cuModuleUnload(module));
-        }
-        const std::string torchMs = pytorchTimeMs(options, resolvePython(options));
-        const double operations = 2.0 * options.m * options.n * options.k; //OPS CALCULATION: 2 * M * N * K. Divide by time to get flops!
-        const double cublasTflops = operations / (cublasMs * 1.0e9);
-
-        std::ostringstream report;
-        report << std::fixed << std::setprecision(4)
-               << "FP32 GEMM  M=" << options.m << " N=" << options.n << " K=" << options.k
-               << "  iterations=" << options.iterations << "\n"
-               << std::left << std::setw(24) << "Implementation" << std::right << std::setw(12) << "ms"
-               << std::setw(16) << "max abs error";
-        if (options.flops) report << std::setw(14) << "TFLOP/s" << std::setw(12) << "% peak";
-        report << "\n" << std::string(options.flops ? 78 : 52, '-') << "\n";
-        auto printRow = [&](const std::string& name, double ms, const std::string& error) {
-            const double tflops = operations / (ms * 1.0e9);
-            report << std::left << std::setw(24) << name << std::right << std::setw(12) << ms
-                   << std::setw(16) << error;
-            if (options.flops) report << std::setw(14) << tflops << std::setw(12) << (100.0 * tflops / options.peakTflops);
-            report << "\n";
-        };
-        for (const auto& row : rows) printRow(row.name, std::stod(row.ms), row.error);
-        printRow("cuBLAS", cublasMs, "-");
-        if (torchMs == "unavailable") report << std::left << std::setw(24) << "PyTorch matmul" << std::right << std::setw(12) << "unavailable" << "\n";
-        else printRow("PyTorch matmul", std::stod(torchMs), "-");
-        if (options.flops)
-            report << "Operations per GEMM: " << std::fixed << std::setprecision(0) << operations
-                   << "; peak reference: " << std::setprecision(1) << options.peakTflops << " TFLOP/s\n";
-
-        std::cout << report.str();
-        if (!options.output.empty()) {
-            std::ofstream file(options.output, std::ios::trunc);
-            if (!file) throw std::runtime_error("Cannot write output file: " + options.output);
-            file << report.str();
-            std::cout << "Report saved to: " << options.output << "\n";
-        }
-        cublasDestroy(handle);
-        cudaFree(deviceA); cudaFree(deviceB); cudaFree(deviceC);
-        return 0;
+        return runBenchmark(parseOptions(argc, argv));
     } catch (const std::exception& error) {
         std::cerr << "Error: " << error.what() << "\n";
         return 1;

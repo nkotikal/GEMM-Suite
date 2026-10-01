@@ -16,3 +16,12 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
     }
     C[row * N + col] = alpha * sum + beta * C[row * N + col];
 }
+
+extern "C" cudaError_t launchGEMM(const float* A, const float* B, float* C,
+                                   int M, int N, int K, float alpha, float beta) {
+    dim3 threads(16, 16);
+    dim3 blocks((M + threads.x - 1) / threads.x,
+                (N + threads.y - 1) / threads.y);
+    GEMM<<<blocks, threads>>>(A, B, C, M, N, K, alpha, beta);
+    return cudaGetLastError();
+}
