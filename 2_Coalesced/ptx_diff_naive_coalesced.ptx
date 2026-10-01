@@ -1,0 +1,21 @@
+#NOTE: The primary difference we can see between these kernels is simply that the assignment 
+#is swapped. 
+#line 45 in the file shows this: mad.lo.s32 	%r1, %r16, %r15, %r17;
+#multiply and add operation: ntid.x * ctaid.x + tid.x. ntid = blockDim.x, ctaid = blockIdx.x.
+#tid is self explanatory. 
+ 42,44c42,44
+< 	mov.u32 	%r15, %ctaid.y;
+< 	mov.u32 	%r16, %ntid.y;
+< 	mov.u32 	%r17, %tid.y;
+---
+> 	mov.u32 	%r15, %ctaid.x;
+> 	mov.u32 	%r16, %ntid.x;
+> 	mov.u32 	%r17, %tid.x;
+46,48c46,48
+< 	mov.u32 	%r18, %ctaid.x;
+< 	mov.u32 	%r19, %ntid.x;
+< 	mov.u32 	%r20, %tid.x;
+---
+> 	mov.u32 	%r18, %ctaid.y;
+> 	mov.u32 	%r19, %ntid.y;
+> 	mov.u32 	%r20, %tid.y;
