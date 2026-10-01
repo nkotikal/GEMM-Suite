@@ -1,6 +1,6 @@
 # GEMM-Suite
 
-CUDA GEMM experiments. Compare custom kernels with cuBLAS and PyTorch.
+CUDA SGEMM progressive optimization study. Compare custom kernels with cuBLAS and PyTorch.
 
 Kernels handwritten, used AI for harness.
 
