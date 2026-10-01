@@ -9,7 +9,7 @@ Kernels handwritten, used AI for harness.
 Run from the repository root:
 
 ```bash
-nvcc -O3 -std=c++17 -arch=sm_90 run_gemm.cu -lcublas -lcuda -Xlinker -ldl -o run_gemm
+nvcc -O3 -std=c++17 -arch=sm_90 run_gemm.cu -lcublas -lcuda -o run_gemm
 ```
 
 ## Run
@@ -23,6 +23,15 @@ nvcc -O3 -std=c++17 -arch=sm_90 run_gemm.cu -lcublas -lcuda -Xlinker -ldl -o run
 The first command benchmarks every discovered kernel and writes `results.txt` in
 the current directory. `--flops` shows TFLOP/s and percent of the default 15.4
 TFLOP/s reference; set another value with `--peak-tflops N`.
+
+## Harness
+
+`--all` searches recursively for `.cu` files defining `GEMM`, then builds each
+with `nvcc` as a temporary shared library and calls its `launchGEMM` function.
+The harness compares each custom result with cuBLAS. It warms up each backend
+three times, then reports the average of 20 CUDA-event-timed runs by default;
+`--iters` changes the timed run count. PyTorch is measured when CUDA-enabled
+PyTorch is available.
 
 PyTorch is optional. If `.venv` has CUDA-enabled PyTorch, the harness finds it
 automatically; it also checks activated virtual and Conda environments before
