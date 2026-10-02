@@ -8,6 +8,11 @@ Kernels handwritten, used AI for harness.
 
 <!-- Paste the latest benchmark table from results.txt here. -->
 
+Historical note: the CUDA 12.0 `sm_90` PTX-JIT run at `16384³` measured the 1D
+register-tiled kernel at 3024.9 ms versus system cuBLAS at 3695.4 ms. This was
+about 18% faster, but used an older toolkit/library stack and is not a native
+`sm_120` comparison.
+
 ## Build
 
 `run_gemm.cu` is host code, so do not pass `-arch` when building it. At runtime,

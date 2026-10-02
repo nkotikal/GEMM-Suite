@@ -513,9 +513,6 @@ static int runBenchmark(Options options) {
     writeBoth([&](std::ostream& report) { printReportHeader(report, options); });
 
     const TimingStats cublasTiming = benchmarkCublas(handle, options, matrices, reference);
-    writeBoth([&](std::ostream& report) {
-        printReportRow(report, options, "cuBLAS", cublasTiming, "-");
-    });
 
     std::vector<BenchmarkResult> results;
     for (const auto& path : paths) {
@@ -525,6 +522,9 @@ static int runBenchmark(Options options) {
             printReportRow(report, options, result.name, result.timing, std::to_string(result.maxError));
         });
     }
+    writeBoth([&](std::ostream& report) {
+        printReportRow(report, options, "cuBLAS", cublasTiming, "-");
+    });
 
     const std::string python = resolvePython(options);
     const auto torchTiming = pytorchTimeMs(options, python);
