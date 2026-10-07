@@ -31,14 +31,17 @@ nvcc -O3 -std=c++17 run_gemm.cu -L"$CUDA_HOME/lib64" -lcublas -lcuda -o run_gemm
 ## Run
 
 ```bash
-./run_gemm --all --m 512 --n 512 --k 512 --flops -o results.txt
-./run_gemm --kernel 1_Naive/naive_gemm.cu
+./run_gemm --all -m 512 -n 512 -k 512 --flops -o results.txt
+./run_gemm --kernel 1_Naive/naive_gemm.cu -m 128 -n 128 -k 128
 ./run_gemm --kernel 3_Tiled/tiled_gemm.cu --testcase
 ```
 
 The first command benchmarks every discovered kernel and writes `results.txt` in
 the current directory. `--flops` shows TFLOP/s and percent of the default 15.4
 TFLOP/s reference; set another value with `--peak-tflops N`.
+
+The dimension flags accept either the long names `--m --n --k` or the current
+short names `-m -n -k`.
 
 ## Harness
 
@@ -47,8 +50,9 @@ with `nvcc` as a temporary shared library and calls its `launchGEMM` function.
 Each launcher is compiled for the active GPU's compute capability.
 The harness compares each custom result with cuBLAS. It warms up each backend
 three times, then reports the average of 20 CUDA-event-timed runs by default;
-`--iters` changes the timed run count. PyTorch is measured when CUDA-enabled
-PyTorch is available.
+`--iters` changes the timed run count. There is no progress-bar mode in the
+current harness; all output is emitted at the end of the kernel timing pass.
+PyTorch is measured when CUDA-enabled PyTorch is available.
 
 PyTorch is optional. If `.venv` has CUDA-enabled PyTorch, the harness finds it
 automatically; it also checks activated virtual and Conda environments before
