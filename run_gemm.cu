@@ -63,7 +63,7 @@ static void printHelp() {
                  "  --kernel FILE       CUDA source with GEMM and launchGEMM\n"
                  "  --all               Run every matching .cu file under the current directory\n"
                  "  --testcase          Read testcase.txt beside the selected kernel and check against cuBLAS\n"
-                 "  --m N --n N --k N   Matrix dimensions (default: 256 each)\n"
+                 "  -m N -n N -k N      Matrix dimensions (default: 256 each)\n"
                  "  --iters N           Timed launches (default: 20)\n"
                  "  --flops             Show TFLOP/s and percent of theoretical peak\n"
                  "  --peak-tflops N     Theoretical peak for the percent column (default: 15.4)\n"
@@ -86,9 +86,9 @@ static Options parseOptions(int argc, char** argv) {
         else if (arg == "--flops") options.flops = true;
         else if (arg == "--testcase") options.testcase = true;
         else if (arg == "--kernel") options.kernel = value();
-        else if (arg == "--m") options.m = std::stoi(value());
-        else if (arg == "--n") options.n = std::stoi(value());
-        else if (arg == "--k") options.k = std::stoi(value());
+        else if (arg == "-m" || arg == "--m") options.m = std::stoi(value());
+        else if (arg == "-n" || arg == "--n") options.n = std::stoi(value());
+        else if (arg == "-k" || arg == "--k") options.k = std::stoi(value());
         else if (arg == "--iters") options.iterations = std::stoi(value());
         else if (arg == "--peak-tflops") options.peakTflops = std::stod(value());
         else if (arg == "--python") options.python = value();
