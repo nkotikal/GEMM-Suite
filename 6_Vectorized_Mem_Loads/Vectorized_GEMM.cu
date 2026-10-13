@@ -11,9 +11,9 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
 
     __shared__ float Atile[tilesize*TM][tilesize], Btile[tilesize][tilesize*TN]; 
 
-    //the "f" sums represent the first row and the "s" sums represent the second row
-    float sum1f = 0.0f, sum2f = 0.0f, sum3f = 0.0f, sum4f = 0.0f, sum1s = 0.0f, sum2s = 0.0f, sum3s = 0.0f, sum4s = 0.0f;
 
+    float acc[TM][TN] = {0.0f};
+    
     //iterate tile along shared dim K
     for (int tile = 0; tile < (K + tilesize - 1)/tilesize; tile++) {
         int tilecolA = tile * tilesize + threadIdx.x;
@@ -29,22 +29,18 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
         __syncthreads();
 
         for (int p = 0; p < tilesize; p++) {
-            float B_reuse_f = Btile[p][threadIdx.x * TN];
-            float B_reuse_s = Btile[p][threadIdx.x * TN + 1];
-            sum1f += Atile[threadIdx.y * TM][p] * B_reuse_f;
-            sum2f += Atile[threadIdx.y * TM + 1][p] * B_reuse_f;
-            sum3f += Atile[threadIdx.y * TM + 2][p] * B_reuse_f;
-            sum4f += Atile[threadIdx.y * TM + 3][p] * B_reuse_f;
-
-            sum1s += Atile[threadIdx.y * TM][p] * B_reuse_s;
-            sum2s += Atile[threadIdx.y * TM + 1][p] * B_reuse_s;
-            sum3s += Atile[threadIdx.y * TM + 2][p] * B_reuse_s;
-            sum4s += Atile[threadIdx.y * TM + 3][p] * B_reuse_s;
-
+            for (int i = 0; i < TN; i++) { //outer loop to load the reused B values across TN
+                float B_reuse = Btile[p][threadIdx.x * TN + i];
+                for(int j = 0; j < TM; j++) { //inner loop to load TM rows of A at column p
+                    acc[j][i] += Atile[threadIdx.y * TM + j][p] * B_reuse;
+                }
+            }
         }
         
         __syncthreads();
     }
+
+
 
     //yeah I know this logic is starting to get a bit silly now, when we get into autotuning I'll condense into a loop.
     //I think for my learning purposes it's good for me to map all this out. 
