@@ -29,10 +29,15 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
         __syncthreads();
 
         for (int p = 0; p < tilesize; p++) {
-            for (int i = 0; i < TN; i++) { //outer loop to load the reused B values across TN
-                float B_reuse = Btile[p][threadIdx.x * TN + i];
-                for(int j = 0; j < TM; j++) { //inner loop to load TM rows of A at column p
-                    acc[j][i] += Atile[threadIdx.y * TM + j][p] * B_reuse;
+            //preload TM rows of A at column p and TN cols of B at row p in registers
+            //to minimize shared memory rereads
+            float regA[TM], regB[TN]; 
+            for (int i = 0; i < TM; i++) regA[i] = Atile[threadIdx.y * TM + i][p]; 
+            for (int j = 0; j < TN; j++) regB[j] = Btile[p][threadIdx.x * TN + j];
+
+            for (int i = 0; i < TM; i++) { 
+                for(int j = 0; j < TN; j++) { 
+                    acc[i][j] += regA[i] * regB[j];
                 }
             }
         }
@@ -41,9 +46,7 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
     }
 
 
-
-    //yeah I know this logic is starting to get a bit silly now, when we get into autotuning I'll condense into a loop.
-    //I think for my learning purposes it's good for me to map all this out. 
+    
     if (col < N) {
         if (row < M) {
             C[row * N + col] = alpha * sum1f + beta * C[row * N + col];
