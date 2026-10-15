@@ -20,7 +20,7 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
         int tilerowB = tile * tilesize + threadIdx.y;
         //load in TM rows at a time into Atile. Can introduce a loop to make this dynamic to TM
         for (int i = 0; i < TM; i++) {
-            Atile[threadIdx.y * TM + i][threadIdx.x] = (row + i < M && tilecolA < K) ? A[row + i * K + tilecolA] : 0.0f;
+            Atile[threadIdx.y * TM + i][threadIdx.x] = (row + i < M && tilecolA < K) ? A[(row + i) * K + tilecolA] : 0.0f;
         }
         //load in TN columns at a time of B tile
         for (int i = 0; i < TN; i++) {
@@ -46,27 +46,9 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
     }
 
 
-    
-    if (col < N) {
-        if (row < M) {
-            C[row * N + col] = alpha * sum1f + beta * C[row * N + col];
-            if (col + 1 < N) 
-                C[row * N + col + 1] = alpha * sum1s + beta * C[row * N + col + 1];
-        }
-        if (row + 1 < M) {
-            C[(row+1) * N + col] = alpha * sum2f + beta * C[(row+1) * N + col];
-            if (col + 1 < N) 
-                C[(row+1) * N + col + 1] = alpha * sum2s + beta * C[(row+1) * N + col + 1];
-        }
-        if (row + 2 < M) {
-            C[(row+2) * N + col] = alpha * sum3f + beta * C[(row+2) * N + col];
-            if (col + 1 < N) 
-                C[(row+2) * N + col + 1] = alpha * sum3s + beta * C[(row+2) * N + col + 1];
-        }
-        if (row + 3 < M) {
-            C[(row+3) * N + col] = alpha * sum4f + beta * C[(row+3) * N + col];
-            if (col + 1 < N) 
-                C[(row+3) * N + col + 1] = alpha * sum4s + beta * C[(row+3) * N + col + 1];
+    for (int i = row; i < min(row + TM, M); i++) {
+        for (int j = col; j < min(col + TN, N); j++) {
+            C[i * N + j] = alpha * acc[i-row][j-col] + beta * C[i * N + j];
         }
     }
 }
