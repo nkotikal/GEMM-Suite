@@ -45,7 +45,7 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
         __syncthreads();
     }
 
-
+    //replaced the if < M, N logic with min to streamline the loop and avoid control flow
     for (int i = row; i < min(row + TM, M); i++) {
         for (int j = col; j < min(col + TN, N); j++) {
             C[i * N + j] = alpha * acc[i-row][j-col] + beta * C[i * N + j];
