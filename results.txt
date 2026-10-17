@@ -1,10 +1,12 @@
-FP32 GEMM  M=16384 N=16384 K=16384  iterations=20
-Implementation                    ms   max abs error       TFLOP/s      % peak
-------------------------------------------------------------------------------
-naive_gemm                33817.7422        0.000437        0.2601      1.6890
-coalesced_gemm             9429.0479        0.000437        0.9329      6.0576
-tiled_gemm                 7063.3486        0.000437        1.2453      8.0865
-1D_register_tiling_gemm    3024.8667        0.000437        2.9079     18.8826
-cuBLAS                     3695.4355               -        2.3803     15.4562
-PyTorch matmul           unavailable
-Operations per GEMM: 8796093022208; peak reference: 15.4 TFLOP/s
+FP32 GEMM  M=4096 N=4096 K=4096  iterations=20
+Implementation               mean ms   stddev ms   max abs error       TFLOP/s      % peak
+------------------------------------------------------------------------------------------
+naive_gemm                  559.2213     11.2885        0.000000        0.2458      1.5959
+coalesced_gemm              174.1471     19.3907        0.000000        0.7892      5.1248
+tiled_gemm                  123.7650      9.4618        0.000000        1.1105      7.2109
+1D_register_tiling_gemm      51.5941      6.4104        0.000000        2.6639     17.2977
+2D_register_tiling           36.3578      3.8500        0.000000        3.7802     24.5466
+Vectorized_GEMM              30.9303      1.0841        0.000000        4.4435     28.8539
+cuBLAS                       16.8036      0.0478               -        8.1791     53.1113
+PyTorch matmul           unavailable           -               -             -           -
+Operations per GEMM: 137438953472; peak reference: 15.4 TFLOP/s
