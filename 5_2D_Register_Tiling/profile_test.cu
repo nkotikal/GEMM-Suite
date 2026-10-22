@@ -27,6 +27,8 @@ int main() {
 	err = cudaMalloc(&d_C, sizeof(float) * M * N);
 	if (err != cudaSuccess) return 1; //error thing is so tedious...
 
+	
+
 	h_A = (float*)malloc(sizeof(float) * M * K);
 	h_B = (float*)malloc(sizeof(float) * K * N);
 	h_C = (float*)malloc(sizeof(float) * M * N);
@@ -42,22 +44,38 @@ int main() {
 	cudaMemcpy(d_B, h_B, sizeof(float) * K * N, cudaMemcpyHostToDevice);
 	cudaMemcpy(d_C, h_C, sizeof(float) * M * N, cudaMemcpyHostToDevice);
 
-	err = launchGEMM(d_A, d_B, d_C, M, N, K, alpha, beta);
-	if (err != cudaSuccess) {
-		printf("Kernel launch failed: %s\n", cudaGetErrorString(err));
-		return 1;
-	}
 
-	err = cudaDeviceSynchronize();
-	if (err != cudaSuccess) {
-		printf("Kernel execution failed: %s\n", cudaGetErrorString(err));
-		return 1;
-	}
 
+
+	auto launch = [&]() {
+		err = launchGEMM(d_A, d_B, d_C, M, N, K, alpha, beta);
+		if (err != cudaSuccess) {
+			printf("Kernel launch failed: %s\n", cudaGetErrorString(err));
+			return 1;
+		}
+
+		err = cudaDeviceSynchronize();
+		if (err != cudaSuccess) {
+			printf("Kernel execution failed: %s\n", cudaGetErrorString(err));
+			return 1;
+		}
+		return 0;
+	};
+		
+	
+	printf("Warmup launches: \n");
+	launch();
+	printf("\u2713 ");
+	launch();
+	printf("\u2713 \n\n");
+
+	printf("Warmups done. Actual launch: ");
+	launch();
+	
 	cudaMemcpy(h_C, d_C, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
-
+	printf("\nC[23] = %f\n", h_C[23]);
+	
 	printf("Done\n");
-	printf("C[23] = %f\n", h_C[23]);
 
 
 	cudaFree(d_A);
