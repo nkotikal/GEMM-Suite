@@ -3,6 +3,8 @@
 #include <random>
 #include <algorithm>
 
+//nvcc profile_test.cu 2D_register_tiling.cu -arch=sm_120 -o profile
+
 extern "C" cudaError_t launchGEMM(const float* A, const float* B, float* C,
                                    int M, int N, int K, float alpha, float beta);
 
