@@ -49,9 +49,10 @@ static std::string readText(const fs::path& path) {
     return contents.str();
 }
 
+// Defaults make a bare ./run_gemm equivalent to: ./run_gemm --all -m 4096 -n 4096 -k 4096
 struct Options {
-    int m = 256, n = 256, k = 256, iterations = 20;
-    bool all = false, flops = false, testcase = false;
+    int m = 4096, n = 4096, k = 4096, iterations = 20;
+    bool all = true, flops = false, testcase = false;
     double peakTflops = 15.4;
     unsigned int seed = 0;
     float absoluteTolerance = 1.0e-3f;
@@ -59,11 +60,12 @@ struct Options {
 };
 
 static void printHelp() {
-    std::cout << "Usage: ./run_gemm (--kernel FILE|--all) [options]\n"
+    std::cout << "Usage: ./run_gemm [--kernel FILE|--all] [options]\n"
+                 "  No arguments        Same as --all -m 4096 -n 4096 -k 4096\n"
                  "  --kernel FILE       CUDA source with GEMM and launchGEMM\n"
-                 "  --all               Run every matching .cu file under the current directory\n"
+                 "  --all               Run every matching .cu file under the current directory (default)\n"
                  "  --testcase          Read testcase.txt beside the selected kernel and check against cuBLAS\n"
-                 "  -m N -n N -k N      Matrix dimensions (default: 256 each)\n"
+                 "  -m N -n N -k N      Matrix dimensions (default: 4096 each)\n"
                  "  --iters N           Timed launches (default: 20)\n"
                  "  --flops             Show TFLOP/s and percent of theoretical peak\n"
                  "  --peak-tflops N     Theoretical peak for the percent column (default: 15.4)\n"
@@ -73,6 +75,7 @@ static void printHelp() {
 
 static Options parseOptions(int argc, char** argv) {
     Options options;
+    bool requestedAll = false;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         auto value = [&]() -> std::string {
@@ -82,7 +85,7 @@ static Options parseOptions(int argc, char** argv) {
         if (arg == "--help" || arg == "-h") {
             printHelp();
             std::exit(0);
-        } else if (arg == "--all") options.all = true;
+        } else if (arg == "--all") requestedAll = true;
         else if (arg == "--flops") options.flops = true;
         else if (arg == "--testcase") options.testcase = true;
         else if (arg == "--kernel") options.kernel = value();
@@ -95,6 +98,8 @@ static Options parseOptions(int argc, char** argv) {
         else if (arg == "-o") options.output = value();
         else throw std::runtime_error("Unknown option: " + arg);
     }
+    // --kernel overrides the default --all, but asking for both explicitly is still an error
+    if (!requestedAll && !options.kernel.empty()) options.all = false;
     if (options.all == !options.kernel.empty())
         throw std::runtime_error("Specify exactly one of --kernel FILE or --all");
     if (options.testcase && options.all)

@@ -9,3 +9,14 @@ tiled_gemm                   93.9066      3.2408        0.000000        0.7318  
 cuBLAS                       10.9616      0.2918               -        6.2691     40.7086
 PyTorch matmul               11.0041      0.2895               -        6.2449     40.5511
 Operations per GEMM: 68719476736; peak reference: 15.4 TFLOP/s
+
+
+
+
+Notes on profiler output:
+- LSU very very high util, same issue reflected by MIO throttle. 
+- Regtiling probably improved this compared to previous iteratoins, 
+    but with vectorization, transposing B, autotuning tiles, and investigating bank conflicts,
+    hopefully we should get some good results. 
+- While kernel isn't compute bound, the dots seem to be squarely in that region, past memory bound ridge. 
+    So increasing arithmetic intensity is likely not the solution. 
