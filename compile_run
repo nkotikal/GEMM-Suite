@@ -1,0 +1,2 @@
+echo "Compiling harness"
+nvcc -O3 -std=c++17 run_gemm.cu -lcublas -lcuda -o run_gemm && echo "Done. Running default tests..." && ./run_gemm

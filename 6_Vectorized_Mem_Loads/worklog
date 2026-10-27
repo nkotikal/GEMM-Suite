@@ -1,0 +1,3 @@
+-as can be seen in my commit history I condensed all the previous kernel's repeated regtiling logic into loops
+-switched TN from 2 to 4 for optimized float4 loads. Will limit my autotuning options later. 
+-swept across different #pragma unroll configurations for my loops to determine the best loops to unroll.

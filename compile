@@ -1,1 +1,5 @@
+echo "Compiling harness"
 nvcc -O3 -std=c++17 run_gemm.cu -lcublas -lcuda -o run_gemm
+echo "Compilation done."
+echo "- Run with ./run_gemm"
+echo "- Use -m -n -k to set dims, --all for all kernels, --kernel <kernel> for a specific one."
