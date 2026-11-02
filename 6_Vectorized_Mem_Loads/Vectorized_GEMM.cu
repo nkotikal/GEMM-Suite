@@ -90,7 +90,7 @@ extern "C" cudaError_t launchGEMM(const float* A, const float* B, float* C,
                                    int M, int N, int K, float alpha, float beta) {
     //replace BK with this. In a model where BK * TN = BN, this is the same.
     //but now, BM and TM are decoupled from BK.
-    dim3 threads(BM / TM, BN / TN); 
+    dim3 threads(BN / TN, BM / TM); 
     dim3 blocks((N + BN - 1) / (BN), 
                 (M + BM - 1) / (BM));
     GEMM<<<blocks, threads>>>(A, B, C, M, N, K, alpha, beta);
