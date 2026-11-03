@@ -10,3 +10,6 @@ For now, serialized loading.
 Comment from nested fallback: 
         //IMPORTANT: keeping for correctness/robustness for now.
         //However, once I complete the rest of suite, I'll split into separate kernels to handle this or add forced padding. 
+
+SASS search with agent reveals register arrays might be getting pushed into local memory
+due to dynamic indexing in epilogue. Will need to look into this myself

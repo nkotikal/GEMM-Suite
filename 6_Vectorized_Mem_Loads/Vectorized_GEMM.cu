@@ -20,9 +20,7 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
     float acc[TM][TN] = {0.0f};
     
     //iterate tile along shared dim K
-    #pragma unroll
     for (int tile = 0; tile < (K + BK - 1)/BK; tile++) {
-        int tilecolA = tile * BK + threadIdx.x;
 
         //----------------------------------------------------A LOAD----------------------------------------------------
         //load in TM rows at a time into Atile, vectorized + transposed. More info in B loading
@@ -93,8 +91,37 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
             //preload TM rows of A at column p and TN cols of B at row p in registers
             //to minimize shared memory rereads
             float regA[TM], regB[TN]; 
-            *reinterpret_cast<float4*>(regA) = *reinterpret_cast<float4*>Atile[p][threadIdx.y * TM];
-            *reinterpret_cast<float4*>(regA) = *reinterpret_cast<float4*>Atile[p][threadIdx.x * TN];
+            
+            //------------------------SMEM A LOAD------------------------
+            if constexpr ((TM&3) == 0) { //no divergence because we evaluate at compile time. This one checks TM%4.
+                #pragma unroll
+                for (int i = 0; i < TM; i += 4) //to allow TM = 8. Loop will be unrolled.
+                    //if the cast on the array is pushing it to local memory, will split it out later. 
+                    *reinterpret_cast<float4*>(regA + i) = *reinterpret_cast<float4*>(&Atile[p][threadIdx.y * TM + i]);
+            } else if constexpr ((TM&1) == 0) { //checks for even TM
+                #pragma unroll
+                for (int i = 0; i < TM; i+= 2)
+                    *reinterpret_cast<float2*>(regA + i) = *reinterpret_cast<float2*>(&Atile[p][threadIdx.y * TM + i]);
+            } else { //fallback for anything else, likely won't be reached unless I do an odd TM during autotuning lol
+                #pragma unroll
+                for (int i = 0; i < TM; i++)
+                    regA[i] = Atile[p][threadIdx.y * TM + i];
+            }
+
+            //------------------------SMEM B LOAD------------------------
+            if constexpr ((TN&3) == 0) { 
+                #pragma unroll
+                for (int i = 0; i < TN; i += 4) 
+                    *reinterpret_cast<float4*>(regB + i) = *reinterpret_cast<float4*>(&Btile[p][threadIdx.x * TN + i]);
+            } else if constexpr ((TN&1) == 0) { 
+                #pragma unroll
+                for (int i = 0; i < TN; i+= 2)
+                    *reinterpret_cast<float2*>(regB + i) = *reinterpret_cast<float2*>(&Btile[p][threadIdx.x * TN + i]);
+            } else { 
+                for (int i = 0; i < TN; i++)
+                    regB[i] = Btile[p][threadIdx.x * TN + i];
+            }
+
 
             #pragma unroll
             for (int i = 0; i < TM; i++) { 
