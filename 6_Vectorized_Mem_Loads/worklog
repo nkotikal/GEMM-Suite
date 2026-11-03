@@ -1,3 +1,12 @@
 -as can be seen in my commit history I condensed all the previous kernel's repeated regtiling logic into loops
 -switched TN from 2 to 4 for optimized float4 loads. Will limit my autotuning options later. 
 -swept across different #pragma unroll configurations for my loops to determine the best loops to unroll.
+
+
+
+After switching B to vectorized loads, it looks like it can't handle N % 4 != 0 for vectorization.
+Future work: Use float2 for when N % 4 != 0 but N % 2 = 0.
+For now, serialized loading.
+Comment from nested fallback: 
+        //IMPORTANT: keeping for correctness/robustness for now.
+        //However, once I complete the rest of suite, I'll split into separate kernels to handle this or add forced padding. 

@@ -2,6 +2,9 @@
 
 constexpr int BM = 128, BN = 64, BK = 32; //decouple tile dims. BM = BK * TN, BN = BK * TN
 constexpr int TM = 4, TN = 2;
+    
+//Tile stride, number of threads in tile for decoupling BM BN BK from "tilesize" and each other
+constexpr int nt_tile = (BN/TN) * (BM/TM); //blockDim.x = BN / TN, blockDim.y = BM / TM
 //I add the parameter TN to also expand out more elements of B. TM loads 4 rows of A. TN will load 2 columns of B
 
 __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int K, float alpha, float beta) {
@@ -9,8 +12,7 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
     int row = (blockDim.y * blockIdx.y + threadIdx.y) * TM;
     int tid = threadIdx.y * blockDim.x + threadIdx.x; //flat per-block thread id.
 
-    //Tile stride, number of threads in tile for decoupling BM BN BK from "tilesize" and each other
-    int nt_tile = blockDim.x * blockDim.y; //blockDim.x = BN / TN, blockDim.y = BM / TM
+
 
     __shared__ __align__(16) float Atile[BM][BK], Btile[BK][BN]; 
 
@@ -21,12 +23,37 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
     #pragma unroll
     for (int tile = 0; tile < (K + BK - 1)/BK; tile++) {
         int tilecolA = tile * BK + threadIdx.x;
-        //load in TM rows at a time into Atile. Can introduce a loop to make this dynamic to TM
+
+        //----------------------------------------------------A LOAD----------------------------------------------------
+        //load in TM rows at a time into Atile, vectorized + transposed. More info in B loading
+        //nt_tile increment: nt_tile is number of cooperating threads in a block. Jump forward to next units of unused threads
+        for (int i = tid; i < BK * BM / 4; i += nt_tile) {
+            int tilerow = i / (BK / 4), tilecol = (i % (BK/4)) * 4; //unlike B, we're loading along shared dim. point is loading along contiguous dim.
+            int global_row = blockIdx.y * BM + tilerow, global_col = tile * BK + tilecol;
+
+            float4 vec = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+            if (global_row < M) {
+                if ((K&3) == 0 and global_col + 3 < K) {
+                    vec = *reinterpret_cast<const float4*>(&A[global_row * K + global_col]);
+                } else {
+                    float vec_intermediates[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+                    for (int offset = 0; offset < 4; offset++) {
+                        if (global_col + offset < K) {
+                            vec_intermediates[offset] = A[global_row * K + global_col + offset];
+                        }
+                    }
+                    vec = make_float4(vec_intermediates[0], vec_intermediates[1], vec_intermediates[2], vec_intermediates[3]);
+                }
+            }
+            *reinterpret_cast<float4*>(&Atile[tilerow][tilecol]) = vec;
+        }
         for (int i = 0; i < TM; i++) {
             Atile[threadIdx.y * TM + i][threadIdx.x] = (row + i < M && tilecolA < K) ? A[(row + i) * K + tilecolA] : 0.0f;
         }
-        //load in TN columns at a time of B tile
 
+
+        //----------------------------------------------------B LOAD----------------------------------------------------
+        //load in TN columns at a time of B tile as vectorized chunks
         for (int i = tid; i < BK * BN / 4; i += nt_tile) { //BK * BN / 4 should be folded out during copmilation
             //row computes the row we load the float4 chunk into.
             //This is because BN is the number of elements in a tile, so BN/4 is the number of chunks per row.
@@ -39,20 +66,20 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
             //might cast row or i to uint64_t later to handle large matrices. 
             float4 vec = make_float4(0.0f, 0.0f, 0.0f, 0.0f); //default
             if (global_row < K) {
-                if (global_col + 3 < N) {
+                if ((N&3) == 0 && global_col + 3 < N) { //checks in bounds and aligned
                     vec = *reinterpret_cast<const float4*>(&B[global_row * N + global_col]);
                 } else {
-                    //allows for N % 4 != 0, but sans vectorization benefit.
-                    if (global_col < N) {
-                        vec.x = B[global_row * N + global_col];
-                        if (global_col + 1 < N) {
-                            vec.y = B[global_row * N + global_col + 1]; 
-                            if (global_col + 2 < N) {
-                                vec.z = B[global_row * N + global_col + 2];
-                            }
+                    //IMPORTANT: keeping for correctness/robustness for now.
+                    //However, once I complete the rest of suite, I'll split into separate kernels to handle this or add forced padding. 
+                    //allows for N % 4 != 0, but sans vectorization benefit. Kinda slow.
+                    float vec_intermediates[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+                    for (int offset = 0; offset < 4; offset++) {
+                        if (global_col + offset < N) {
+                            vec_intermediates[offset] = B[global_row * N + global_col + offset];
                         }
                     }
-                    //and vec.w remains 0.
+                    vec = make_float4(vec_intermediates[0], vec_intermediates[1], vec_intermediates[2], vec_intermediates[3]);
+                    
                 }
             }
             *reinterpret_cast<float4*>(&Btile[tilerow][tilecol]) = vec;
