@@ -1,7 +1,7 @@
 #include <cuda_runtime.h>
 
 constexpr int BM = 128, BN = 64, BK = 32; //decouple tile dims. BM = BK * TN, BN = BK * TN
-constexpr int TM = 4, TN = 2;
+constexpr int TM = 4, TN = 4;
     
 //Tile stride, number of threads in tile for decoupling BM BN BK from "tilesize" and each other
 constexpr int nt_tile = (BN/TN) * (BM/TM); //blockDim.x = BN / TN, blockDim.y = BM / TM
@@ -14,7 +14,7 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
 
 
 
-    __shared__ __align__(16) float Atile[BM][BK], Btile[BK][BN]; 
+    __shared__ __align__(16) float Atile[BK][BM], Btile[BK][BN]; 
 
 
     float acc[TM][TN] = {0.0f};
@@ -33,7 +33,7 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
 
             float4 vec = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
             if (global_row < M) {
-                if ((K&3) == 0 and global_col + 3 < K) {
+                if ((K&3) == 0 && global_col + 3 < K) {
                     vec = *reinterpret_cast<const float4*>(&A[global_row * K + global_col]);
                 } else {
                     float vec_intermediates[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -45,12 +45,15 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
                     vec = make_float4(vec_intermediates[0], vec_intermediates[1], vec_intermediates[2], vec_intermediates[3]);
                 }
             }
-            *reinterpret_cast<float4*>(&Atile[tilerow][tilecol]) = vec;
+            //*reinterpret_cast<float4*>(&Atile[tilerow][tilecol]) = vec;
+            //instead of above, we load into Atile in a transposed pattern so we can load contiguously with float4 later.
+            //this doesn't defeat the point of vectorization because instead of 
+            // LDG STS LDG STS LDG STS LDG STS, we LDG.128 STS STS STS STS
+            Atile[tilecol][tilerow] = vec.x;
+            Atile[tilecol + 1][tilerow] = vec.y;
+            Atile[tilecol + 2][tilerow] = vec.z;
+            Atile[tilecol + 3][tilerow] = vec.w;
         }
-        for (int i = 0; i < TM; i++) {
-            Atile[threadIdx.y * TM + i][threadIdx.x] = (row + i < M && tilecolA < K) ? A[(row + i) * K + tilecolA] : 0.0f;
-        }
-
 
         //----------------------------------------------------B LOAD----------------------------------------------------
         //load in TN columns at a time of B tile as vectorized chunks
@@ -90,8 +93,8 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
             //preload TM rows of A at column p and TN cols of B at row p in registers
             //to minimize shared memory rereads
             float regA[TM], regB[TN]; 
-            for (int i = 0; i < TM; i++) regA[i] = Atile[threadIdx.y * TM + i][p]; 
-            for (int j = 0; j < TN; j++) regB[j] = Btile[p][threadIdx.x * TN + j];
+            *reinterpret_cast<float4*>(regA) = *reinterpret_cast<float4*>Atile[p][threadIdx.y * TM];
+            *reinterpret_cast<float4*>(regA) = *reinterpret_cast<float4*>Atile[p][threadIdx.x * TN];
 
             #pragma unroll
             for (int i = 0; i < TM; i++) { 
