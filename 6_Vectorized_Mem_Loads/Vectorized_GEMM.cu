@@ -12,8 +12,6 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
     int row = (blockDim.y * blockIdx.y + threadIdx.y) * TM;
     int tid = threadIdx.y * blockDim.x + threadIdx.x; //flat per-block thread id.
 
-
-
     __shared__ __align__(16) float Atile[BK][BM], Btile[BK][BN]; 
 
 
@@ -135,6 +133,7 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
         __syncthreads();
     }
 
+    //----------------------------------------------EPILOGUE----------------------------------------------
     //replaced the if < M, N logic with min to streamline the loop and avoid control flow
     for (int i = row; i < min(row + TM, M); i++) {
         for (int j = col; j < min(col + TN, N); j++) {

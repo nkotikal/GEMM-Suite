@@ -13,3 +13,28 @@ Comment from nested fallback:
 
 SASS search with agent reveals register arrays might be getting pushed into local memory
 due to dynamic indexing in epilogue. Will need to look into this myself
+
+Vectorization is done though!
+Currently it seems like my acc array is placed in local memory instead of registers in the SASS (line 334)
+	//## File "/home/nak00/GEMM-Suite/6_Vectorized_Mem_Loads/Vectorized_GEMM.cu", line 133
+        /*0eb0*/                   BAR.SYNC.DEFER_BLOCKING 0x0 ;
+        /*0ec0*/                   BRA.U UP0, `(.L_x_13) ;
+	//## File "/home/nak00/GEMM-Suite/6_Vectorized_Mem_Loads/Vectorized_GEMM.cu", line 128
+        /*0ed0*/                   STL.128 [R1], R16 ;
+        /*0ee0*/                   STL.128 [R1+0x10], R12 ;
+        /*0ef0*/                   STL.128 [R1+0x20], R8 ;
+        /*0f00*/                   STL.128 [R1+0x30], R4 ;
+.L_x_0:
+
+Very strange. Even stranger is that barrier on line 133 seems to come before line 128's loads. Line 128 is the
+operational line here:
+            #pragma unroll
+            for (int i = 0; i < TM; i++) { 
+                #pragma unroll
+                for(int j = 0; j < TN; j++) { 
+                    acc[i][j] += regA[i] * regB[j];
+                }
+            }
+
+It does seem to be that through unrolling the compiler is also vectorizing these stores into STL.128s (which is store to local). These aren't 
+the vectorized stores I made so they must have been folded by the compiler. 
