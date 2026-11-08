@@ -4,6 +4,23 @@ CUDA SGEMM progressive optimization study. Compare custom kernels with cuBLAS an
 
 Kernels handwritten, used AI for harness.
 
+## Optimization Steps
+
+| # | Folder | Optimization |
+|---|---|---|
+| 1 | `1_Naive` | One thread per output element reading straight from global memory |
+| 2 | `2_Coalesced` | Remap thread indexing so a warp reads contiguous addresses |
+| 3 | `3_Tiled` | Stage A and B tiles in shared memory and loop over K |
+| 4 | `4_1D_Register_Tiling` | Each thread computes `TM` outputs with a column of A in registers |
+| 5 | `5_2D_Register_Tiling` | Each thread computes a `TM`×`TN` tile with A and B in registers |
+| 6 | `6_Vectorized_Mem_Loads` | `float4` global and shared transfers plus a transposed A tile |
+| 7 | `7_Autotuning` | Tile dims as template parameters with a swept config dispatch |
+| 8 | `8_Async_Memory_and_Double_Buffering` | *(planned)* Overlap tile loads with compute |
+| 9 | `9_Warptiling` | *(planned)* Add a warp-level tile between block and thread |
+| 10 | `10_Epilogue` | *(planned)* Shared-memory staged output with fused alpha and beta scaling |
+| 11 | `11_SplitK` | *(planned)* Partition the K dimension across blocks and reduce |
+| 12 | `12_Tensor_Cores_FP16` | *(planned)* `mma` instructions on FP16 inputs |
+
 ## Current Results
 
 <!-- Paste the latest benchmark table from results.txt here. -->

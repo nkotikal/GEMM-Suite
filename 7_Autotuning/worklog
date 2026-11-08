@@ -1,0 +1,5 @@
+Plan:
+
+We now have 5 tunable params: BM, BN, BK, TM, TN.
+Will autotune again later once I complete the other optimizations,
+as I will certainly accrue more parameters. 

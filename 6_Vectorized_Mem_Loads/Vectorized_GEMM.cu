@@ -137,6 +137,8 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
     //new epilogue loop. Found in the SASS that acc is in local memory, not registers
     //so fixing that by allowing for proper unrolling with compile time constants, replacing
     //dependence on M.
+    //I could also explore vectorizing the global stores to get some STG.128s, but
+    //that doesn't seem like a great use of time at the moment. 
     #pragma unroll
     for (int i = 0; i < TM; i++) {
         #pragma unroll
