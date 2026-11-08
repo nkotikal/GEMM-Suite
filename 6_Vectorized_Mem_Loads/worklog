@@ -36,5 +36,35 @@ operational line here:
                 }
             }
 
-It does seem to be that through unrolling the compiler is also vectorizing these stores into STL.128s (which is store to local). These aren't 
+It does seem to be that through some unrolling the compiler is also vectorizing these stores into STL.128s (which is store to local). These aren't 
 the vectorized stores I made so they must have been folded by the compiler. 
+
+Additionally, the epilogue is not unrolled at all. 
+To make sure acc stays in registers, I have changed the 
+loop logic in the epilogue to be independent of runtime values so that the loops can be
+fully unrolled and we're using more direct indexing.  
+But need to confirm in sass.
+
+
+	//## File "/home/nak00/GEMM-Suite/6_Vectorized_Mem_Loads/Vectorized_GEMM.cu", line 144
+        /*0ff0*/                   ISETP.GE.AND P0, PT, R2, UR7, PT ;
+	//## File "/home/nak00/GEMM-Suite/6_Vectorized_Mem_Loads/Vectorized_GEMM.cu", line 146
+        /*1000*/                   IADD.64 R4, R6, R36 ;
+        /*1010*/                   ISETP.GE.OR P4, PT, R16, UR6, P0 ;
+        /*1020*/                   LEA R2, P2, R4, UR4, 0x2 ;
+        /*1030*/              @!P1 FMUL R0, R0, R3 ;
+        /*1040*/                   LEA.HI.X R3, R4, UR5, R5, 0x2, P2 ;
+        /*1050*/              @!P1 FFMA R21, R21, R10, R0 ;
+        /*1060*/              @!P1 STG.E desc[UR8][R8.64], R21 ;
+        /*1070*/              @!P4 LDG.E R0, desc[UR8][R2.64+0x4] ;
+
+As we can see R21, the acc[0][0], remains in registers for its operations and acc is no longer
+placed on the stack!
+
+
+
+btw to get the sass I ran:
+    nvcc -arch=sm_120 -lineinfo -cubin <kernel> -o <kernel.cubin>
+    nvdisasm -g -c 5_2D_Register_Tiling/compiled.cubin > compiled.sass
+-c is code only
+

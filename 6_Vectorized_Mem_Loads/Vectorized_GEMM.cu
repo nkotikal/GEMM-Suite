@@ -134,10 +134,16 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
     }
 
     //----------------------------------------------EPILOGUE----------------------------------------------
-    //replaced the if < M, N logic with min to streamline the loop and avoid control flow
-    for (int i = row; i < min(row + TM, M); i++) {
-        for (int j = col; j < min(col + TN, N); j++) {
-            C[i * N + j] = alpha * acc[i-row][j-col] + beta * C[i * N + j];
+    //new epilogue loop. Found in the SASS that acc is in local memory, not registers
+    //so fixing that by allowing for proper unrolling with compile time constants, replacing
+    //dependence on M.
+    #pragma unroll
+    for (int i = 0; i < TM; i++) {
+        #pragma unroll
+        for (int j = 0; j < TN; j++) {
+            int adj_row = row + i, adj_col = col + j;
+            if (adj_row < M && adj_col < N) //previous indexing logic was to avoid this check, but now we need this back for unrolling.
+                C[adj_row * N + adj_col] = alpha * acc[i][j] + beta * C[adj_row * N + adj_col];
         }
     }
 }
