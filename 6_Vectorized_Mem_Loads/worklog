@@ -26,7 +26,7 @@ Currently it seems like my acc array is placed in local memory instead of regist
         /*0f00*/                   STL.128 [R1+0x30], R4 ;
 .L_x_0:
 
-Very strange. Even stranger is that barrier on line 133 seems to come before line 128's loads. Line 128 is the
+Very strange. Even stranger is that barrier on line 133 seems to come before line 128's stores. Line 128 is the
 operational line here:
             #pragma unroll
             for (int i = 0; i < TM; i++) { 
@@ -61,6 +61,20 @@ But need to confirm in sass.
 As we can see R21, the acc[0][0], remains in registers for its operations and acc is no longer
 placed on the stack!
 
+We can prove this as well, running this command before and after the change:
+nvcc -arch=sm_120 -cubin -Xptxas -v 6_Vectorized_Mem_Loads/Vectorized_GEMM.cu
+
+Before:
+    64 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+    ptxas info    : Used 48 registers, used 1 barriers, 64 bytes cumulative stack size, 24576 bytes smem
+
+After:
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+    ptxas info    : Used 40 registers, used 1 barriers, 24576 bytes smem
+
+We can see that we go from 64 bytes in stack -> 0. 
+With TM = TN = 4, acc is exactly 64 bytes.
+acc was never in registers so spill is zero.
 
 
 btw to get the sass I ran:
