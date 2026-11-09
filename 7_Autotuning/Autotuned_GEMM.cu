@@ -150,7 +150,7 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
 }
 
 //created this wrapper so that the harness can run launchGEMM without
-//worrying about setting up template.
+//worrying about setting up template and both functions can be used
 template<int BM, int BN, int BK, int TM, int TN>
 cudaError_t tunedLaunchGEMM(const float* A, const float* B, float* C,
                                    int M, int N, int K, float alpha, float beta) {
@@ -164,7 +164,7 @@ cudaError_t tunedLaunchGEMM(const float* A, const float* B, float* C,
 
 extern "C" cudaError_t launchGEMM(const float* A, const float* B, float* C,
                                    int M, int N, int K, float alpha, float beta) {
-    tunedLaunchGEMM<128, 64, 32, 4, 4>(A, B, C, M, N, K, alpha, beta);
+    //tunedLaunchGEMM<128, 64, 32, 4, 4>(A, B, C, M, N, K, alpha, beta);
     return cudaGetLastError();
 }
 
