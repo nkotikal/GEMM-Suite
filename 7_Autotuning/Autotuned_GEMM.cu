@@ -164,7 +164,12 @@ cudaError_t tunedLaunchGEMM(const float* A, const float* B, float* C,
 
 extern "C" cudaError_t launchGEMM(const float* A, const float* B, float* C,
                                    int M, int N, int K, float alpha, float beta) {
-    //tunedLaunchGEMM<128, 64, 32, 4, 4>(A, B, C, M, N, K, alpha, beta);
+    //commented this out for autotune loop so that it doesnt compile for config here
+    //the current config is set to the best one found by 
+    //my autotune sweep for the 4096x4096x4096 shape. 
+    //tunedLaunchGEMM<64, 128, 32, 4, 4>(A, B, C, M, N, K, alpha, beta);
+    tunedLaunchGEMM<128, 128, 16, 8, 4>(A, B, C, M, N, K, alpha, beta);
+    //tunedLaunchGEMM<96, 128, 32, 4, 8>(A, B, C, M, N, K, alpha, beta);
     return cudaGetLastError();
 }
 

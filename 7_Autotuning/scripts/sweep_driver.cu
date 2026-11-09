@@ -1,9 +1,11 @@
 // Autotuning sweep driver. One binary per tile config: the config comes from -D
 // at compile time because template parameters cannot be set at runtime.
 //
-//   nvcc -arch=sm_120 -DCFG_BM=128 -DCFG_BN=64 -DCFG_BK=32 -DCFG_TM=4 -DCFG_TN=4 \
-//        sweep_driver.cu cublas_ref.o -lcublas -o sweep
-//   ./sweep [M] [N] [K] [min_iters]
+// Run from the stage directory (7_Autotuning), not from scripts/:
+//   nvcc -arch=sm_120 -O3 -c scripts/cublas_ref.cu -o /tmp/cublas_ref.o
+//   nvcc -arch=sm_120 -O3 -DCFG_BM=128 -DCFG_BN=128 -DCFG_BK=16 -DCFG_TM=8 -DCFG_TN=4 \
+//        scripts/sweep_driver.cu /tmp/cublas_ref.o -lcublas -o /tmp/sweep
+//   /tmp/sweep [M] [N] [K] [min_iters]
 //
 // `min_iters` is a floor. Both the kernel and cuBLAS are timed over however many
 // launches it takes to cover TARGET_MS, so small shapes get thousands of
@@ -15,7 +17,7 @@
 //
 // Prints one CSV line. Exits nonzero if the launch fails or the result is wrong.
 
-#include "Autotuned_GEMM.cu"
+#include "../Autotuned_GEMM.cu"
 #include "cublas_ref.cuh"
 
 #include <algorithm>

@@ -1,7 +1,7 @@
 #include <cuda_runtime.h>
 
 constexpr int BM = 128, BN = 64, BK = 32; //decouple tile dims. BM = BK * TN, BN = BK * TN
-constexpr int TM = 4, TN = 4;
+constexpr int TM = 4, TN = 2;
     
 //Tile stride, number of threads in tile for decoupling BM BN BK from "tilesize" and each other
 constexpr int nt_tile = (BN/TN) * (BM/TM); //blockDim.x = BN / TN, blockDim.y = BM / TM
