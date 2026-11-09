@@ -1,0 +1,11 @@
+FP32 GEMM  M=4096 N=4096 K=4096  iterations=20
+Implementation               mean ms   stddev ms   max abs error
+----------------------------------------------------------------
+naive_gemm                  559.2312     11.4334        0.000000
+coalesced_gemm              173.9486     19.4806        0.000000
+tiled_gemm                  123.8106      9.4876        0.000000
+1D_register_tiling_gemm      51.6186      6.5309        0.000000
+2D_register_tiling           36.3160      3.7910        0.000000
+Vectorized_GEMM              31.9043      1.2750        0.000000
+cuBLAS                       16.8053      0.0501               -
+PyTorch matmul           unavailable           -               -

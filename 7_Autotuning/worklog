@@ -3,3 +3,10 @@ Plan:
 We now have 5 tunable params: BM, BN, BK, TM, TN.
 Will autotune again later once I complete the other optimizations,
 as I will certainly accrue more parameters. 
+
+
+Autotuning run complete and the results are in autotune_summary, also there's a 
+skipped.txt showing a few skipped configs, not a big deal compared to the
+overall workload. 
+
+Results, on 4096^3 shape down to 20
