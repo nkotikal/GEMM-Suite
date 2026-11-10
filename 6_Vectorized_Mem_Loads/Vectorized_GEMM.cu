@@ -21,7 +21,7 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
     for (int tile = 0; tile < (K + BK - 1)/BK; tile++) {
 
         //----------------------------------------------------A LOAD----------------------------------------------------
-        //load in TM rows at a time into Atile, vectorized + transposed. More info in B loading
+        //load in 4 rows at a time into Atile, vectorized + transposed. More info in B loading
         //nt_tile increment: nt_tile is number of cooperating threads in a block. Jump forward to next units of unused threads
         for (int i = tid; i < BK * BM / 4; i += nt_tile) {
             int tilerow = i / (BK / 4), tilecol = (i % (BK/4)) * 4; //unlike B, we're loading along shared dim. point is loading along contiguous dim.
@@ -52,7 +52,7 @@ __global__ void GEMM(const float* A, const float* B, float* C, int M, int N, int
         }
 
         //----------------------------------------------------B LOAD----------------------------------------------------
-        //load in TN columns at a time of B tile as vectorized chunks
+        //load in 4 columns at a time of B tile as vectorized chunks
         for (int i = tid; i < BK * BN / 4; i += nt_tile) { //BK * BN / 4 should be folded out during copmilation
             //row computes the row we load the float4 chunk into.
             //This is because BN is the number of elements in a tile, so BN/4 is the number of chunks per row.
