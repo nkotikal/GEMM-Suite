@@ -38,6 +38,8 @@ NVCC. With CUDA 12.0 on an RTX 5060, it falls back to `sm_90` PTX for driver JIT
 Install CUDA Toolkit 12.8 or newer to compile natively for `sm_120` and use a
 matching cuBLAS. Point the compiler and runtime linker at that toolkit:
 
+
+\**will make more specific to other systems later. the compile binary and compile_run binaries may also provide desired functionality*
 ```bash
 export CUDA_HOME=/usr/local/cuda-12.8
 export PATH="$CUDA_HOME/bin:$PATH"
