@@ -21,8 +21,20 @@ Kernels handwritten, used AI for harness.
 | 11 | `11_SplitK` | *(planned)* Partition the K dimension across blocks and reduce |
 | 12 | `12_Tensor_Cores_FP16` | *(planned)* `mma` instructions on FP16 inputs |
 
-## Current Results
+## Current Results (Workload 7)
 
+FP32 GEMM  M=4096 N=4096 K=4096  iterations=20
+Implementation               mean ms   stddev ms   max abs error
+----------------------------------------------------------------
+naive_gemm                  556.1964     12.0610        0.000000
+coalesced_gemm              173.2972     19.3525        0.000000
+tiled_gemm                  123.1576      9.3631        0.000000
+1D_register_tiling_gemm      51.5222      6.3444        0.000000
+2D_register_tiling           36.2000      3.7030        0.000000
+Vectorized_GEMM              31.7786      1.3750        0.000000
+Autotuned_GEMM               20.2486      0.0780        0.000000
+cuBLAS                       16.3998      0.7508               -
+PyTorch matmul           unavailable           -               -
 <!-- Paste the latest benchmark table from results.txt here. -->
 
 Historical note: the CUDA 12.0 `sm_90` PTX-JIT run at `16384³` measured the 1D
